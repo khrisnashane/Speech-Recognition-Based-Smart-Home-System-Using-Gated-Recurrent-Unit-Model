@@ -14,7 +14,7 @@ kipas = LED(22)
 indikator_lampu = LED(16)  # Menyala saat merekam, mati setelah selesai
 
 # Path model
-model_path = r"/home/skripsi/program/model_gru_final_revisi.h5"  # Sesuaikan dengan lokasi model di Raspberry Pi
+model_path = r"masukkan path lokasi file dari model di perangkat yang digunakan"  # Sesuaikan dengan lokasi model di Raspberry Pi
 model = tf.keras.models.load_model(model_path)
 print("Model loaded successfully!")
 
