@@ -1,0 +1,133 @@
+import numpy as np
+import sounddevice as sd
+import librosa
+import tensorflow as tf
+from noisereduce import reduce_noise
+from gpiozero import LED
+import time
+
+# Konfigurasi GPIO menggunakan gpiozero
+lampu_belakang = LED(5)
+lampu_depan = LED(6)
+solenoid = LED(25)
+kipas = LED(22)
+indikator_lampu = LED(16)  # Menyala saat merekam, mati setelah selesai
+
+# Path model
+model_path = r"/home/skripsi/program/model_gru_final_revisi.h5"  # Sesuaikan dengan lokasi model di Raspberry Pi
+model = tf.keras.models.load_model(model_path)
+print("Model loaded successfully!")
+
+# Parameter rekaman
+duration = 2  # Durasi rekaman dalam detik
+sample_rate = 16000  # Sampling rate
+num_timestep = 63  # Time-steps sesuai model
+num_features = 39  # Fitur per timestep sesuai model
+silence_threshold = 0.001  # Ambang batas energi untuk mendeteksi suara
+confidence_threshold = 0.6  # Ambang batas kepercayaan untuk prediksi
+
+# Label
+labels = ['buka_pintu', 'kunci_pintu', 'lampu_belakang_mati', 'lampu_belakang_nyala',
+          'lampu_depan_mati', 'lampu_depan_nyala', 'matikan_kipas', 'nyalakan_kipas']
+
+def record_audio(duration, sample_rate):
+    """Rekam audio selama durasi tertentu."""
+    print("Merekam audio...")
+    indikator_lampu.on()  # Nyalakan indikator saat merekam
+    audio = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='float32')
+    sd.wait()  # Tunggu hingga selesai merekam
+    indikator_lampu.off()  # Matikan indikator setelah selesai
+    audio = audio.flatten()  # Ubah menjadi array 1D
+    print("Rekaman selesai!")
+    return audio
+
+def preprocess_audio(audio, sample_rate):
+    """Preproses audio: normalisasi, noise reduction, ekstraksi MFCC."""
+    # Noise reduction
+    audio = reduce_noise(y=audio, sr=sample_rate)
+
+    # Hitung energi audio
+    energy = np.sum(audio ** 2) / len(audio)
+    print(f"Energi Audio: {energy}")
+
+    # Jika energi di bawah threshold, anggap tidak ada suara
+    if energy < silence_threshold:
+        return None
+
+    # Ekstraksi fitur MFCC
+    mfcc = librosa.feature.mfcc(y=audio, sr=sample_rate, n_mfcc=13)
+    delta = librosa.feature.delta(mfcc)
+    delta2 = librosa.feature.delta(mfcc, order=2)
+    features = np.vstack([mfcc, delta, delta2])  # Gabungkan MFCC, Delta, dan Delta-Delta
+
+    # Padding atau cropping agar sesuai dengan num_timestep
+    if features.shape[1] > num_timestep:
+        features = features[:, :num_timestep]
+    else:
+        padding = num_timestep - features.shape[1]
+        features = np.pad(features, ((0, 0), (0, padding)), mode='constant', constant_values=0)
+
+    return features.T  # Transpose ke format (time_steps, features)
+
+def predict_label(features):
+    """Prediksi label berdasarkan fitur."""
+    sample = np.expand_dims(features, axis=0)  # Tambahkan dimensi batch
+    predictions = model.predict(sample)
+    predicted_class = np.argmax(predictions)
+    confidence = np.max(predictions)
+    return labels[predicted_class], confidence
+
+def execute_command(label):
+    """Eksekusi perintah berdasarkan label."""
+    if label == 'buka_pintu':
+        solenoid.on()
+        print("Pintu dibuka.")
+
+    elif label == 'kunci_pintu':
+        solenoid.off()
+        print("Pintu dikunci.")
+
+    elif label == 'lampu_belakang_nyala':
+        lampu_belakang.on()
+        print("Lampu belakang dinyalakan.")
+
+    elif label == 'lampu_belakang_mati':
+        lampu_belakang.off()
+        print("Lampu belakang dimatikan.")
+
+    elif label == 'lampu_depan_nyala':
+        lampu_depan.on()
+        print("Lampu depan dinyalakan.")
+
+    elif label == 'lampu_depan_mati':
+        lampu_depan.off()
+        print("Lampu depan dimatikan.")
+
+    elif label == 'nyalakan_kipas':
+        kipas.on()
+        print("Kipas dinyalakan.")
+
+    elif label == 'matikan_kipas':
+        kipas.off()
+        print("Kipas dimatikan.")
+
+# Looping realtime
+try:
+    while True:
+        print("Persiapan merekam, tunggu 2 detik...")
+        time.sleep(2)  # Jeda sebelum merekam
+        audio = record_audio(duration, sample_rate)
+        features = preprocess_audio(audio, sample_rate)
+
+        if features is None:
+            print("Tidak ada suara terdeteksi.\n")
+        else:
+            label, confidence = predict_label(features)
+            if confidence < confidence_threshold:
+                print(f"Tidak yakin (Kepercayaan: {confidence:.2f})\n")
+            else:
+                print(f"Hasil Prediksi: {label} (Kepercayaan: {confidence:.2f})\n")
+                execute_command(label)
+
+except KeyboardInterrupt:
+    print("Program dihentikan.")
